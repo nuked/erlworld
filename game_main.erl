@@ -5,7 +5,7 @@
 -module (game_main).
 -compile ([debug_info]).
 
--export ([game_console/1, game_manager/0, game_run/0]).
+-export ([game_console/1, game_manager/0, game_run/0, game_healthgen/1]).
 
 -import (game_util, [game_version/0, game_name/0]).
 -import (game_tcp, [game_tcp_start/2]).
@@ -32,18 +32,17 @@ game_manager () ->
 
 game_manager_run (LTab, PTab, OTab) ->
 	receive
-		{status, Pid} ->
-			%{{{  respond to `Pid' with status string.
+		{status, Pid} -> %{{{  respond to `Pid' with status string.
 			Str = io_lib:format ("~s (~s)~n" ++
 					"Players:   ~-4w~n" ++
 					"Objects:   ~-4w~n" ++
 					"Locations: ~-4w~n",
 				[game_name(), game_version(), ets:info (PTab, size),
 					ets:info (OTab, size), ets:info (LTab, size)]),
-			Pid ! {status, Str};
+			Pid ! {status, Str},
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{register_locn, LNum, Pid} ->
-			%{{{  respond to `Pid' with fact.
+		{register_locn, LNum, Pid} -> %{{{  respond to `Pid' with fact.
 			Locns = ets:lookup (LTab, LNum),
 			case length (Locns) of
 				0 ->
@@ -51,15 +50,15 @@ game_manager_run (LTab, PTab, OTab) ->
 					Pid ! {registered_locn, self(), LNum};
 				1 ->
 					Pid ! {error, self(), "already registered!"}
-			end;
+			end,
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{unregister_locn, LNum, Pid} ->
-			%{{{  responds to `Pid' with fact.
+		{unregister_locn, LNum, Pid} -> %{{{  responds to `Pid' with fact.
 			ets:delete (LTab, LNum),
-			Pid ! {unregistered_locn, self(), LNum};
+			Pid ! {unregistered_locn, self(), LNum},
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{register_player, PName, Pid} ->
-			%{{{  responds to `Pid' with fact.
+		{register_player, PName, Pid} -> %{{{  responds to `Pid' with fact.
 			People = ets:lookup (PTab, PName),
 			case length (People) of
 				0 ->
@@ -67,35 +66,35 @@ game_manager_run (LTab, PTab, OTab) ->
 					Pid ! {registered_player, self(), PName};
 				1 ->
 					Pid ! {error, self(), "already registered!"}
-			end;
+			end,
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{unregister_player, PName, Pid} ->
-			%{{{  responds to `Pid' with fact.
+		{unregister_player, PName, Pid} -> %{{{  responds to `Pid' with fact.
 			ets:delete (PTab, PName),
-			Pid ! {unregistered_player, self(), PName};
+			Pid ! {unregistered_player, self(), PName},
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{register_object, OName, OPid, Pid} ->
-			%{{{  responds to `Pid' with fact; registers object with `OPid'.
+		{register_object, OName, OPid, Pid} -> %{{{  responds to `Pid' with fact; registers object with `OPid'.
 			ets:insert (OTab, {OName, OPid}),
-			Pid ! {registered_object, self(), OName};
+			Pid ! {registered_object, self(), OName},
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{unregister_object, OName, OPid, Pid} ->
-			%{{{  responds to `Pid' with fact.
+		{unregister_object, OName, OPid, Pid} -> %{{{  responds to `Pid' with fact.
 			ets:delete_object (OTab, {OName, OPid}),
-			Pid ! {unregistered_object, self(), OName};
+			Pid ! {unregistered_object, self(), OName},
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{query_name, PName, Pid} ->
-			%{{{  queries whether a name is in use, responds to `Pid'.
+		{query_name, PName, Pid} -> %{{{  queries whether a name is in use, responds to `Pid'.
 			People = ets:lookup (PTab, PName),
 			LP = length (People),
 			if (LP == 0) ->
 				Pid ! {name_free, PName};
 			true ->
 				Pid ! {name_inuse, PName}
-			end;
+			end,
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{lookup_locn, LNum, Pid} ->
-			%{{{  looks up a location, responds to `Pid'.
+		{lookup_locn, LNum, Pid} -> %{{{  looks up a location, responds to `Pid'.
 			Locns = ets:lookup (LTab, LNum),
 			case length (Locns) of
 				0 ->
@@ -103,17 +102,27 @@ game_manager_run (LTab, PTab, OTab) ->
 				1 ->
 					{_, LPid} = hd (Locns),
 					Pid ! {locn, self(), LPid}
-			end;
+			end,
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
-		{code_switch_players} ->
-			%{{{  sends messages to all players instructing them to code_switch -- forwarded to the implementations (tcp_client and bot)
+		{random_locn, Pid} -> %{{{  looks up a random location, responds to `Pid'.
+			NLocns = ets:info (LTab, size),
+			XFun = fun (Tail) -> case ets:lookup (LTab, random:uniform (NLocns)) of
+						[] -> Tail (Tail);
+						[{_, LPid}|_] -> LPid		% result of fun
+					end end,
+			RandLPid = XFun (XFun),
+			Pid ! {locn, self(), RandLPid},
+			game_manager_run (LTab, PTab, OTab);
+		%}}}
+		{code_switch_players} -> %{{{  sends messages to all players instructing them to code_switch -- forwarded to the implementations (tcp_client and bot)
 			ets:foldl (fun ({_, P}, _) -> P ! code_switch, true end, true, PTab),
-			true;
+			game_manager_run (LTab, PTab, OTab);
 			%}}}
 		Other ->
-			io:format ("game_manager_run(): unhandled message: ~p~n", [Other])
-	end,
-	game_manager_run (LTab, PTab, OTab).
+			io:format ("game_manager_run(): unhandled message: ~p~n", [Other]),
+			game_manager_run (LTab, PTab, OTab)
+	end.
 
 
 %}}}
@@ -136,6 +145,7 @@ gc_help (_) -> %{{{
 	io:format ("    sproom <Name> <Locn>    spawn location of the given name/type~n"),
 	io:format ("    spbot <Type> <Name> <Locn> <TLocn> <TSrc> <TName>~n"),
 	io:format ("                            spawn bot in specific location~n"),
+	io:format ("    sphealth                spawn a random health generator~n"),
 	io:format ("    link <Lc> <Exit> <To>   link Lc:Exit to To~n"),
 	io:format ("    reloadbots              re-compile and re-load bot code~n"),
 	true.
@@ -170,6 +180,11 @@ gc_spawnobj (GMgr, Obj, Locn) -> %{{{
 		% place object there!
 		InitLocn ! {drop, Obj, O}
 	end,
+	true.
+
+%}}}
+gc_spawnhealth (GMgr) -> %{{{
+	spawn_link (?MODULE, game_healthgen, [GMgr]),
 	true.
 
 %}}}
@@ -320,6 +335,7 @@ game_console (GMgr) ->
 	ets:insert (CmdTab, {{spbot, 6}, fun gc_spawnbot/7}),
 	ets:insert (CmdTab, {{link, 3}, fun gc_linklocn/4}),
 	ets:insert (CmdTab, {{reloadbots, 0}, fun gc_reloadbots/1}),
+	ets:insert (CmdTab, {{sphealth, 0}, fun gc_spawnhealth/1}),
 
 	% create first room: the construct (default for abandoned people/objects/etc.)
 	gc_spawnlocn (GMgr, "construct", "0"),
@@ -396,6 +412,30 @@ game_console_run (GMgr, CmdTab) ->
 		game_console_run (GMgr, CmdTab)
 	end.
 
+%}}}
+%{{{  game_healthgen (GMgr): random healthy-thing object generator.
+%
+game_healthgen (GMgr) ->
+	random:seed (now ()),
+	game_healthgen2 (GMgr).
+
+game_healthgen2 (GMgr) ->
+	timer:sleep ((random:uniform (10) + 10) * 5000),		% wait 50 upwards seconds.
+
+	GMgr ! {random_locn, self ()},					% get random location
+	ILocn = receive {locn, GMgr, L} -> L end,
+
+	{OName, OPid} = case random:uniform (3) of
+		1 -> {"bread", game_object_create (GMgr, "bread", [])};
+		2 -> {"cookies", game_object_create (GMgr, "cookies", [])};
+		3 -> {"ribena", game_object_create (GMgr, "ribena", [])}
+	end,
+
+	io:format ("game_healthgen2(): dropping new object ~s (~p) in location ~p..~n", [OName, OPid, ILocn]),
+
+	ILocn ! {drop, OName, OPid},
+
+	game_healthgen2 (GMgr).
 %}}}
 
 

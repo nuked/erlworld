@@ -3,7 +3,7 @@
 % GPL 2
 
 -module (game).
--export ([game_run/0, game_crun/0]).
+-export ([game_run/0, game_crun/0, game_compile/0]).
 
 
 game_run () ->
@@ -11,7 +11,7 @@ game_run () ->
 
 
 % Slightly more gruesome version that attempts to compile stuff first.
-game_docompiler_run () ->
+game_docompile () ->
 	% modules, in dependency order..
 	Mods = [game_util, game_object, game_locn, game_player, game_tcp, game_bots, game_main],
 
@@ -19,12 +19,22 @@ game_docompiler_run () ->
 	lists:map (fun (M) -> code:purge (M) end, Mods),
 	lists:map (fun (M) -> {module, _} = code:load_file (M) end, Mods),
 
-	% if we get here without throwing an exception, try and run (reloaded version!)
-	game_main:game_run ().
+	true.
 
 game_crun () ->
 	io:format ("attempting to compile and run...~n"),
-	try game_docompiler_run () catch
-		error: X -> io:format ("compile or run failure.~n"), false
+	try
+		game_docompile (),
+		game_run ()
+	catch
+		error: X -> io:format ("compile or run failure: ~p~n", [X]), false
+	end.
+
+game_compile () ->
+	io:format ("attempting to compile...~n"),
+	try
+		game_docompile ()
+	catch
+		error: X -> io:format ("compile failure: ~p~n", [X]), false
 	end.
 

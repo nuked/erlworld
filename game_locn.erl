@@ -86,43 +86,37 @@ game_locn (GMgr, LNum, Desc, PPid) ->
 
 game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 	receive
-		code_switch ->
-			%{{{  switch code
+		code_switch -> %{{{  switch code
 			io:format ("game_locn_run(): location ~p switching code..~n", [LNum]),
 			game_locn:game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{enter, {Name, PPid}} ->
-			%{{{  player entering the room, send notifications to those already here and add player
+		{enter, {Name, PPid}} -> %{{{  player entering the room, send notifications to those already here and add player
 			ets:foldl (fun ({_, P}, _) -> P ! {person_entering, Name}, true end, 0, PTab),
 			ets:insert (PTab, {Name, PPid}),
 			PPid ! {entered, LNum, self ()},
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{leave, Name} ->
-			%{{{  player leaving the game (rather than leaving the room) -- perhaps forced
+		{leave, Name} -> %{{{  player leaving the game (rather than leaving the room) -- perhaps forced
 			[{_, PPid}] = ets:lookup (PTab, Name),
 			ets:delete (PTab, Name),
 			ets:foldl (fun ({_, P}, _) -> P ! {person_leaving, Name}, true end, horses, PTab),
 			PPid ! {left, LNum},
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{leave_noexit, Name} ->
-			%{{{  player being removed from teh room
+		{leave_noexit, Name} -> %{{{  player being removed from teh room
 			[{_, PPid}] = ets:lookup (PTab, Name),
 			ets:delete (PTab, Name),
 			ets:foldl (fun ({_, P}, _) -> P ! {person_leaving_noexit, Name}, true end, true, PTab),
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{look, Pid} ->
-			%{{{  player (or bot) looking around.
+		{look, Pid} -> %{{{  player (or bot) looking around.
 			Objects = ets:foldl (fun ({Name, Pid}, L) -> [Name | L] end, [], OTab),
 			People = ets:foldl (fun (NamePid, L) -> [NamePid | L] end, [], PTab),
 
 			Pid ! {looked, Desc, Objects, People, Exits},
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{set_exit, Pid, Exit, LocnPid} ->
-			%{{{  connecting up one of the exits, or disconnecting it.
+		{set_exit, Pid, Exit, LocnPid} -> %{{{  connecting up one of the exits, or disconnecting it.
 			[N,E,S,W] = Exits,
 			{Cur, NewExits} = case Exit of
 				north -> {N, [LocnPid, E, S, W]};
@@ -143,8 +137,7 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 			end,
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, NewExits);
 			%}}}
-		{do_move, Name, Pid, Direction} ->
-			%{{{  player wanting to move in a particular direction -- `Pid' will be waiting for response.
+		{do_move, Name, Pid, Direction} -> %{{{  player wanting to move in a particular direction -- `Pid' will be waiting for response.
 			[N,E,S,W] = Exits,
 			X = case Direction of
 				north -> N;
@@ -163,22 +156,19 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 					Pid ! {moving, self ()},
 					NextUp ! {enter, {Name, Pid}}
 			end,
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{player_drop, PName, OName, OPid} ->
-			%{{{  player dropping an object in the room (no response to player).
+		{player_drop, PName, OName, OPid} -> %{{{  player dropping an object in the room (no response to player).
 			ets:insert (OTab, {OName, OPid}),
 			ets:foldl (fun ({_, P}, _) -> P ! {player_drop_object, PName, OName}, true end, true, PTab),
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{drop, OName, OPid} ->
-			%{{{  miscellaneous appearance of an object (probably spawned here).
+		{drop, OName, OPid} -> %{{{  miscellaneous appearance of an object (probably spawned here).
 			ets:insert (OTab, {OName, OPid}),
 			ets:foldl (fun ({_, P}, _) -> P ! {object_appear, OName}, true end, true, PTab),
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{examine, OName, Pid} ->
-			%{{{  examine object in the room (if it exists!).  Responds to `Pid'.
+		{examine, OName, Pid} -> %{{{  examine object in the room (if it exists!).  Responds to `Pid'.
 			OObjs = ets:lookup (OTab, OName),
 			case OObjs of
 				[] ->
@@ -193,10 +183,9 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 				[{_,OPid}|_] ->
 					OPid ! {examine, Pid}
 			end,
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{do_pickup, PName, OName, Pid} ->
-			%{{{  pickup an object in the room, if it exists.  Responds to `Pid'.
+		{do_pickup, PName, OName, Pid} -> %{{{  pickup an object in the room, if it exists.  Responds to `Pid'.
 			OObjs = ets:lookup (OTab, OName),
 			case OObjs of
 				[] ->
@@ -219,22 +208,19 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 							end, true, PTab)
 					end
 			end,
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{do_say, Who, What} ->
-			%{{{  player saying something (no response).
+		{do_say, Who, What} -> %{{{  player saying something (no response).
 			% just broadcast out to anyone in the room
 			ets:foldl (fun ({_, P}, _) -> P ! {say, Who, What}, true end, true, PTab),
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{do_action, Who, What} ->
-			%{{{  player (bot) doing something, no response.
+		{do_action, Who, What} -> %{{{  player (bot) doing something, no response.
 			% just broadcast out to anyone in the room
 			ets:foldl (fun ({_, P}, _) -> P ! {action, Who, What}, true end, true, PTab),
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{do_use, PName, OName, Pid} ->
-			%{{{  player using an object in the room.  Responds to `Pid'.
+		{do_use, PName, OName, Pid} -> %{{{  player using an object in the room.  Responds to `Pid'.
 			OObjs = ets:lookup (OTab, OName),
 			case OObjs of
 				[] ->
@@ -252,16 +238,27 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 							Used = receive {use_fail, M} -> {use_fail, M}; {use_ok} -> {use_ok} end,
 							Pid ! Used;
 						use_inplayer ->
-							Pid ! {use_in_player, OPid}
+							Pid ! {use_in_player, OPid};
+						use_eat ->
+							OPid ! {get_attr, health, self ()},
+							H = receive {attr, health, HX} -> HX end,
+							ets:delete_object (OTab, {ONm, OPid}),
+							Pid ! {use_ate, ONm, H},
+							OPid ! {destroy},			% trash object.
+							% tell anyone else about this.
+							ets:foldl (fun ({N, P}, _) ->
+									if (N == PName) -> true;
+									true -> P ! {player_ate, PName, ONm}, true
+									end
+								end, true, PTab)
 					end
 			end,
-			true;
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
 		Other ->
 			io:format ("game_locn_run(): got unhandled message: ~p~n", [Other]),
-			true
-	end,
-	game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits).
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits)
+	end.
 
 %}}}
 

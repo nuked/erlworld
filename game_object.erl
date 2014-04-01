@@ -3,39 +3,48 @@
 % GPL 2
 
 -module (game_object).
--export ([game_object/6, game_object_create/3]).
+-export ([game_object/6, game_object_create/3, game_object_run/5]).
+
+-import (game_util, [lookup_attr/2]).
 
 
 %{{{  game_object_create (GMgr, Name, Opts): creates a new object (free-standing)
 % returns Pid of the newly created object (will register itself with the game, but not a location/player).
 
 game_object_create (GMgr, Name, Opts) ->
+	case game_read_ofile (Name) of
+		{error, R} ->
+			io:format ("game_object_create(~s): ~s~n", [Name, R]),
+			false;
+		{Desc, Attrs} ->
+			OPid = spawn_link (?MODULE, game_object, [GMgr, Name, Desc, Attrs, Opts, self ()]),
+
+			% wait for it to register itself
+			receive
+				{object_start, OPid} -> OPid;		% result is Pid of new object
+				{object_fail, OPid} -> false
+			end
+	end.
+
+% reads description and attributes given an object name,
+% returns: {Desc,Attrs} | {error, ...}.
+
+game_read_ofile (Name) ->
 	DFName = "data/" ++ Name ++ ".odesc",
 
 	case filelib:is_file (DFName) of
 		true ->
-			% open descriptor file
 			case file:open (DFName, read) of
 				{ok, Han} ->
-					{Desc, Attrs} = game_read_odesc (Han, [], []),
+					R = game_read_odesc (Han, [], []),
 					file:close (Han),
-
-					OPid = spawn_link (?MODULE, game_object, [GMgr, Name, Desc, Attrs, Opts, self ()]),
-
-					% wait for it to register itself
-					receive
-						{object_start, LPid} -> LPid;		% result is Pid of new object
-						{object_fail, LPid} -> false
-					end;
-				{error, R} ->
-					io:format ("game_object_create(): cannot open ~s: ~p~n", [DFName, R]),
-					false
+					R;
+				{error, Reason} ->
+					{error, io_lib:format ("failed to open file: ~p", [Reason])}
 			end;
 		false ->
-			io:format ("game_object_create(): no such file ~s~n", [DFName]),
-			false
+			{error, io_lib:format ("no such file: ~s", [DFName])}
 	end.
-
 
 % this reads the object description from file.
 %
@@ -111,28 +120,35 @@ object_use_locn ([_|Xs]) -> object_use_locn (Xs).
 %
 game_object_run (GMgr, Name, Desc, Attrs, Opts) ->
 	receive
-		{examine, Pid} ->
-			%{{{  examine object -- responds with description and attributes.
-			Pid ! {examined, Desc, Attrs},
-			true;
+		code_switch -> %{{{  switch code.
+			game_object:game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
-		{destroy} ->
-			%{{{  destroy object -- assumes it isn't attached in the game anywhere!
+		{examine, Pid} -> %{{{  examine object -- responds with description and attributes.
+			Pid ! {examined, Desc, Attrs},
+			game_object_run (GMgr, Name, Desc, Attrs, Opts);
+			%}}}
+		{destroy} -> %{{{  destroy object -- assumes it isn't attached in the game anywhere!
 			game_object_shutdown (GMgr, Name);
 			%}}}
-		{can_pickup, Pid} ->
-			%{{{  determine whether this object can be picked up.
+		{can_pickup, Pid} -> %{{{  determine whether this object can be picked up.
 			case object_use_type (Opts) of
 				use_none -> Pid ! {can_pickup, self (), true};
 				_ -> Pid ! {can_pickup, self (), false}
-			end;
+			end,
+			game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
-		{use_type, Pid} ->
-			%{{{  returns the type of usage this object supports: use_none, use_inlocn, use_inplayer
-			Pid ! {can_use, self (), object_use_type (Opts)};
+		{get_attr, Attr, Pid} -> %{{{  looks up an attribute, responds to `Pid'.
+			Pid ! {attr, Attr, lookup_attr (Attrs, Attr)},
+			game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
-		{use_in_locn, LNum, LPid, Pid} ->
-			%{{{  using object in a specific location
+		{use_type, Pid} -> %{{{  returns the type of usage this object supports: use_none, use_inlocn, use_inplayer, use_eat
+			Pid ! case lookup_attr (Attrs, health) of
+				undefined -> {can_use, self (), object_use_type (Opts)};
+				_ -> {can_use, self (), use_eat}
+			end,
+			game_object_run (GMgr, Name, Desc, Attrs, Opts);
+			%}}}
+		{use_in_locn, _LNum, LPid, Pid} -> %{{{  using object in a specific location
 			case object_use_type (Opts) of
 				use_inlocn ->
 					% create a new object! (regular thing)
@@ -146,10 +162,10 @@ game_object_run (GMgr, Name, Desc, Attrs, Opts) ->
 							Pid ! {use_ok}
 					end;
 				_ -> Pid ! {use_fail, "cannot use this"}
-			end;
+			end,
+			game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
-		{use_in_player, PName, PPid, Pid} ->
-			%{{{  someone using an object in a specific way.  query is done by abstract player; respond to `Pid' saying how to handle.
+		{use_in_player, _PName, _PPid, Pid} -> %{{{  someone using an object in a specific way.  query is done by abstract player; respond to `Pid' saying how to handle.
 			case object_use_type (Opts) of
 				use_inplayer ->
 					% this transports the player elsewhere
@@ -168,13 +184,13 @@ game_object_run (GMgr, Name, Desc, Attrs, Opts) ->
 						Pid ! {use_movetolocn, LocnNum, NewLocn}
 					end;
 				_ -> Pid ! {use_fail, "cannot use this"}
-			end;
+			end,
+			game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
 		Other ->
 			io:format ("game_object_run(): got unhandled message: ~p~n", [Other]),
-			true
-	end,
-	game_object_run (GMgr, Name, Desc, Attrs, Opts).
+			game_object_run (GMgr, Name, Desc, Attrs, Opts)
+	end.
 
 game_object_shutdown (GMgr, Name) ->
 	io:format ("game_object_shutdown(): destroying object ~s~n", [Name]),

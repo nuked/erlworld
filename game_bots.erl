@@ -7,7 +7,7 @@
 		game_wanderbot_run2/4, game_cleanerbot_run2/4]).
 
 -import (game_util, [game_version/0, game_name/0, valid_exits/2]).
--import (game_player, [game_player_create/4]).
+-import (game_player, [game_player_create/5]).
 
 
 
@@ -35,7 +35,7 @@ game_bot_startup (GMgr, BName, BTypeAtom, BILocn, BTLocn, BTSrc, BTName) ->
 	if (Fun == undefined) ->
 		exit (normal);
 	true ->
-		case game_player_create (GMgr, BName, self (), BILocn) of
+		case game_player_create (GMgr, BName, self (), BILocn, [{immortal}]) of
 			{ok, PlrPid} ->
 				Fun (PlrPid);
 			{error, R} ->

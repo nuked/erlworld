@@ -14,6 +14,8 @@ game:game_crun().
 By default the TCP server listens on port 4040 for incoming connections.  This can
 be changed inside `game_main.erl` (`game_run/0`).
 
+Note: this isn't finished yet..!
+
 --- 
 Fred Barnes, March 2014.
 

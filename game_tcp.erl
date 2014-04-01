@@ -117,6 +117,12 @@ game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt) ->
 							inv_look (CSock, Name, PlrPid), true;
 						"inventory" ->
 							inv_look (CSock, Name, PlrPid), true;
+						"t" ->
+							qry_status (CSock, Name, PlrPid), true;
+						"status" ->
+							qry_status (CSock, Name, PlrPid), true;
+						"unwield" ->
+							do_unwield (CSock, Name, PlrPid), true;
 						_ ->
 							false
 					end;
@@ -139,6 +145,12 @@ game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt) ->
 							do_use (CSock, Arg2, Name, PlrPid), true;
 						"use" ->
 							do_use (CSock, Arg2, Name, PlrPid), true;
+						"wield" ->
+							do_wield (CSock, Arg2, Name, PlrPid), true;
+						"attack" ->
+							do_attack (CSock, Arg2, Name, PlrPid), true;
+						"a" ->
+							do_attack (CSock, Arg2, Name, PlrPid), true;
 						_ ->
 							false
 					end;
@@ -295,7 +307,9 @@ show_help (CSock) ->
 			{"[u]se",	"what",	"use object"},
 			{"[a]ttack",	"who",	"attack someone"},
 			{"e[x]amine",	"what",	"examine something/someone"},
-			{"wield",	"what",	"wield something"}
+			{"s[t]atus",	"",	"status of self"},
+			{"wield",	"what",	"wield something"},
+			{"unwield",	"",	"unwield currently wielded thing"}
 			]),
 	gen_tcp:send (CSock, "\r\n"),
 	true.
@@ -325,8 +339,7 @@ trigger_look (CSock, Name, PlrPid) ->
 	end.
 
 %}}}
-%{{{  inv_look (CSock, Name, PlrPid): 
-% look at inventory.
+%{{{  inv_look (CSock, Name, PlrPid): look at inventory.
 
 inv_look (CSock, Name, PlrPid) ->
 	PlrPid ! {inv_look, self ()},
@@ -340,18 +353,63 @@ inv_look (CSock, Name, PlrPid) ->
 	true.
 
 %}}}
+%{{{  qry_status (CSock, Name, PlrPid): query player status.
+
+qry_status (CSock, Name, PlrPid) ->
+	PlrPid ! {qry_status, self ()},
+	S = receive
+		{status, Health, Vital, Wielding, Immortal} ->
+			io_lib:format ("Health (~w/100), Vitality (~w/100)" ++ (if Immortal == true -> " immortal"; true -> "" end)
+					++ "\r\n", [Health, Vital]) ++
+				(case Wielding of
+					undefined -> "";
+					{ONm,_} -> io_lib:format ("Wielding ~s\r\n", [ONm])
+				end)
+	end,
+	gen_tcp:send (CSock, S),
+	true.
+
+%}}}
 %{{{  do_examine (CSock, OName, Name, PlrPid): examine an object/person.
 %
 
 do_examine (CSock, OName, Name, PlrPid) ->
 	PlrPid ! {do_examine, OName, self ()},
 	receive
-		{examined, Desc, _Attrs} ->
-			lists:map (fun (X) -> game_tcp_cli_writedstr (CSock, X), true end, Desc);
+		{examined, Desc, Attrs} ->
+			lists:map (fun (X) -> game_tcp_cli_writedstr (CSock, X), true end, Desc),
+			case Attrs of
+				[] -> true;
+				_ ->
+					game_tcp_cli_writedstr (CSock, {highlight, str_objattrs (Attrs)})
+			end;
 		{examine_fail, _Msg} ->
 			game_tcp_cli_writedstr (CSock, {high2, "Cannot examine that!"});
 		{examine_resist, _Msg} ->
 			game_tcp_cli_writedstr (CSock, {high2, OName ++ " resists your examination."})
+	end,
+	true.
+
+str_objattrs ([]) -> "";
+str_objattrs ([{health, H}|R]) ->
+	io_lib:format ("[health: ~w] ", [H]) ++ str_objattrs (R);
+str_objattrs ([{damage, H}|R]) ->
+	io_lib:format ("[damage: ~w] ", [H]) ++ str_objattrs (R);
+str_objattrs ([_|R]) ->
+	str_objattrs (R).
+
+%}}}
+%{{{  do_attack (CSock, Who, Name, PlrPid): attack someone.
+%
+
+do_attack (CSock, Who, Name, PlrPid) ->
+	PlrPid ! {do_attack, Who, self ()},
+	receive
+		{attack_ok, Msg, Damage} ->
+			game_tcp_cli_writedstr (CSock, {high6, Msg}),
+			game_tcp_cli_writedstr (CSock, {high5, io_lib:format ("~w points of damage", [Damage])});
+		{attack_fail, Msg} ->
+			game_tcp_cli_writedstr (CSock, {high6, Msg})
 	end,
 	true.
 
@@ -384,7 +442,7 @@ do_drop (CSock, OName, Name, PlrPid) ->
 	true.
 		
 %}}}
-%{{{  do_use (CSock, OName, Name, PlrPid): use an object (assuming it's in the room).
+%{{{  do_use (CSock, OName, Name, PlrPid): use an object (assuming it's in the room or held by us).
 %
 
 do_use (CSock, OName, Name, PlrPid) ->
@@ -396,6 +454,34 @@ do_use (CSock, OName, Name, PlrPid) ->
 			game_tcp_cli_writedstr (CSock, {high2, "No such object."});
 		{use_fail, _Msg} ->
 			game_tcp_cli_writedstr (CSock, {high2, "Cannot use that."})
+	end,
+	true.
+
+%}}}
+%{{{  do_wield (CSock, OName, Name, PlrPid): wield an object (assuming it's held).
+%
+
+do_wield (CSock, OName, Name, PlrPid) ->
+	PlrPid ! {do_wield, OName, self ()},
+	receive
+		{wield_ok, ONm} ->
+			game_tcp_cli_writedstr (CSock, {high2, "Now wielding " ++ ONm});
+		{wield_fail, _Msg} ->
+			game_tcp_cli_writedstr (CSock, {high2, "Cannot wield that."})
+	end,
+	true.
+
+%}}}
+%{{{  do_unwield (CSock, Name, PlrPid): unwield currently wielded object.
+%
+
+do_unwield (CSock, Name, PlrPid) ->
+	PlrPid ! {do_unwield, self ()},
+	receive
+		{unwield_ok, ONm} ->
+			game_tcp_cli_writedstr (CSock, {high2, "No longer wielding " ++ ONm});
+		{unwield_fail, _Msg} ->
+			game_tcp_cli_writedstr (CSock, {high2, "Cannot unwield :(.  Not wielding anything?"})
 	end,
 	true.
 
@@ -514,6 +600,8 @@ game_tcp_cli_writedstr (CSock, {high4, Str}) ->
 	gen_tcp:send (CSock, ansi_attr(yellow) ++ Str ++ ansi_attr(normal) ++ "\r\n");
 game_tcp_cli_writedstr (CSock, {high5, Str}) ->
 	gen_tcp:send (CSock, ansi_attr(bold_green) ++ Str ++ ansi_attr(normal) ++ "\r\n");
+game_tcp_cli_writedstr (CSock, {high6, Str}) ->
+	gen_tcp:send (CSock, ansi_attr(bold_red) ++ Str ++ ansi_attr(normal) ++ "\r\n");
 game_tcp_cli_writedstr (CSock, {msg, Str}) ->
 	gen_tcp:send (CSock, ansi_attr(bold_white) ++ Str ++ ansi_attr(normal) ++ "\r\n").
 
