@@ -96,27 +96,34 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 			PPid ! {entered, LNum, self ()},
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{leave, Name} -> %{{{  player leaving the game (rather than leaving the room) -- perhaps forced
+		{leave, Name} -> %{{{  player leaving the game (rather than leaving the room) -- perhaps forced.  Reponds to player.
 			[{_, PPid}] = ets:lookup (PTab, Name),
 			ets:delete (PTab, Name),
 			ets:foldl (fun ({_, P}, _) -> P ! {person_leaving, Name}, true end, horses, PTab),
 			PPid ! {left, LNum},
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{leave_noexit, Name} -> %{{{  player being removed from teh room
-			[{_, PPid}] = ets:lookup (PTab, Name),
+		{leave_noexit, Name} -> %{{{  player being removed from the room
+			% [{_, PPid}] = ets:lookup (PTab, Name),
 			ets:delete (PTab, Name),
 			ets:foldl (fun ({_, P}, _) -> P ! {person_leaving_noexit, Name}, true end, true, PTab),
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
+		{leave_death, Name} -> %{{{  player being removed from the room (because they died).  Reponds to player.
+			[{_, PPid}] = ets:lookup (PTab, Name),
+			ets:delete (PTab, Name),
+			ets:foldl (fun ({_, P}, _) -> P ! {person_leaving_death, Name}, true end, true, PTab),
+			PPid ! {left_death, LNum},
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
+		%}}}
 		{look, Pid} -> %{{{  player (or bot) looking around.
-			Objects = ets:foldl (fun ({Name, Pid}, L) -> [Name | L] end, [], OTab),
+			Objects = ets:foldl (fun ({Name, _Pid}, L) -> [Name | L] end, [], OTab),
 			People = ets:foldl (fun (NamePid, L) -> [NamePid | L] end, [], PTab),
 
 			Pid ! {looked, Desc, Objects, People, Exits},
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{set_exit, Pid, Exit, LocnPid} -> %{{{  connecting up one of the exits, or disconnecting it.
+		{set_exit, _Pid, Exit, LocnPid} -> %{{{  connecting up one of the exits, or disconnecting it.
 			[N,E,S,W] = Exits,
 			{Cur, NewExits} = case Exit of
 				north -> {N, [LocnPid, E, S, W]};
@@ -207,6 +214,21 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 								end
 							end, true, PTab)
 					end
+			end,
+			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
+			%}}}
+		{do_attack, PName, Who, What, Damage, Pid} -> %{{{  player `PName' performing an attack (on `Who' with `What' inflicting `Damage').  Reponds to `Pid'.
+			People = ets:lookup (PTab, Who),
+			case People of
+				[] ->
+					% not here.
+					Pid ! {attack_fail, "Who's that?"};
+				[{PName,_}|_] ->
+					% only matches ourselves: not allowed! (would deadlock)
+					Pid ! {attack_fail, "Cannot attack yourself!"};
+				[{_,PlrPid}|_] ->
+					% is here, do attack! -- responds directly to `Pid'.
+					PlrPid ! {attack, PName, What, Damage, Pid}
 			end,
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}

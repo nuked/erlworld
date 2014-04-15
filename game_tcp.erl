@@ -5,7 +5,7 @@
 -module (game_tcp).
 -compile ([debug_info]).
 
--export ([game_tcp_start/2, game_tcp_svr_listening/4]).
+-export ([game_tcp_start/2, game_tcp_reload/1, game_tcp_cli_first/2, game_tcp_svr_listening/4, game_tcp_cli_ioloop/5]).
 
 -import (game_util, [game_version/0, game_name/0, valid_exits/2]).
 -import (game_player, [game_player_create/3]).
@@ -60,7 +60,7 @@ game_tcp_cli_pickedname (GMgr, CSock, Name) ->
 		{ok, PlrPid} ->
 			% means we're good and player is in the game!
 			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, "");
-		{error, R} ->
+		{error, _} ->
 			gen_tcp:send (CSock, "\r\nFailed to create player in game, sorry :(\r\n"),
 			gen_tcp:close (CSock),
 			exit (normal)
@@ -71,6 +71,10 @@ game_tcp_cli_pickedname (GMgr, CSock, Name) ->
 %
 game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt) ->
 	receive
+		code_switch ->
+			%{{{  switch implementations
+			game_tcp:game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
 		{tcp, CSock, BDat} ->
 			%{{{  process TCP data (probably a whole line)
 			Str = binary_to_list (BDat),
@@ -196,6 +200,24 @@ game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt) ->
 			look_in_location (LNum, LPid, CSock, PlrPid),
 			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
 			%}}}
+		{exit_appearing, _Pid, Direction} ->
+			%{{{  sent by our player when an exit appears
+			game_tcp_cli_clearprompt (CSock),
+			game_tcp_cli_writedstr (CSock, {high4, "an exit appears to the " ++ exit_str(Direction)}),
+			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
+		{exit_vanishing, _Pid, Direction} ->
+			%{{{  sent by our player when an exit vanishes
+			game_tcp_cli_clearprompt (CSock),
+			game_tcp_cli_writedstr (CSock, {high4, "the exit to the " ++ exit_str(Direction) ++ " disappears"}),
+			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
+		{exit_changing, _Pid, Direction} ->
+			%{{{  sent by our player when an exit changes
+			game_tcp_cli_clearprompt (CSock),
+			game_tcp_cli_writedstr (CSock, {high4, "the exit to the " ++ exit_str(Direction) ++ " flickers briefly"}),
+			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
 		{person_entering, OName} ->
 			%{{{  sent from a room via our player when someone else enters the room we're in
 			game_tcp_cli_clearprompt (CSock),
@@ -218,6 +240,12 @@ game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt) ->
 			%{{{  sent from a room via our player when someone leaves by an abnormal exit (e.g. door object)
 			game_tcp_cli_clearprompt (CSock),
 			game_tcp_cli_writedstr (CSock, {high3, OName ++ " left the room"}),
+			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
+		{person_leaving_death, OName} ->
+			%{{{  sent from a room via our player when someone leaves by dying
+			game_tcp_cli_clearprompt (CSock),
+			game_tcp_cli_writedstr (CSock, {high3, OName ++ " died and vanished"}),
 			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
 			%}}}
 		{player_drop_object, PN, OName} ->
@@ -253,6 +281,29 @@ game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt) ->
 			gen_tcp:send (CSock, S),
 			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
 			%}}}
+		{attack, Who, What, Damage} ->
+			%{{{  sent by the player when we are attacked.
+			game_tcp_cli_clearprompt (CSock),
+			S = io_lib:format ("~s attacks you with a ~s, ~w points damage", [Who, What, Damage]),
+			S2 = ansi_attr (bold_red) ++ S ++ ansi_attr (normal) ++ "\r\n",
+			gen_tcp:send (CSock, S2),
+			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
+		{died} ->
+			%{{{  we died: need to handle carefully -- wait for "resurrect" message once we've played out.
+			game_tcp_cli_clearprompt (CSock),
+			timer:sleep (500),
+			S1 = ansi_attr (bold_white) ++ "The world starts to fade away..." ++ ansi_attr (normal) ++ "\r\n",
+			gen_tcp:send (CSock, S1),
+			game_tcp_cli_ioloop_resurrect (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
+		{message, M} ->
+			%{{{  general message -- usually sent by death-code, but could be from elsewhere
+			game_tcp_cli_clearprompt (CSock),
+			S = ansi_attr (bold_white) ++ M ++ ansi_attr (normal) ++ "\r\n",
+			gen_tcp:send (CSock, S),
+			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
 		Other ->
 			io:format ("game_tcp_cli_ioloop(): got unhandled message: ~p~n", [Other]),
 			game_tcp_cli_ioloop (GMgr, CSock, Name, PlrPid, Prompt)
@@ -271,11 +322,29 @@ game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt) ->
 % Note: I'm not convinced about this (at all!) -- but the result with
 % tinyfugue (tf) doesn't look too bad!
 %
-game_tcp_cli_clearprompt (CSock) ->
+game_tcp_cli_clearprompt (_CSock) ->
 	%gen_tcp:send (CSock, "\x1b[1K\r\n").
 	%gen_tcp:send (CSock, "\r    \r").
 	true.
 
+% slightly special version that is used when the player has been killed.
+%
+game_tcp_cli_ioloop_resurrect (GMgr, CSock, Name, PlrPid, Prompt) ->
+	receive
+		{message, M} ->
+			%{{{  general message -- usually sent by death-code, but could be from elsewhere
+			S = ansi_attr (bold_white) ++ M ++ ansi_attr (normal) ++ "\r\n",
+			gen_tcp:send (CSock, S),
+			game_tcp_cli_ioloop_resurrect (GMgr, CSock, Name, PlrPid, Prompt);
+			%}}}
+		{resurrect} ->
+			%{{{  done! -- loop back into the main game.
+			S = ansi_attr (bold_yellow) ++ "You feel the world returning.." ++ ansi_attr (normal) ++ "\r\n",
+			gen_tcp:send (CSock, S),
+			timer:sleep (500),
+			game_tcp_cli_ioloop_prompt (GMgr, CSock, Name, PlrPid, Prompt)
+			%}}}
+	end.
 
 %}}}
 
@@ -304,7 +373,7 @@ show_help (CSock) ->
 			{"[i]nventory",	"",	"list inventory"},
 			{"[g]et",	"what",	"pick up object"},
 			{"[d]rop",	"what",	"drop object"},
-			{"[u]se",	"what",	"use object"},
+			{"[u]se",	"what",	"use object (eat food)"},
 			{"[a]ttack",	"who",	"attack someone"},
 			{"e[x]amine",	"what",	"examine something/someone"},
 			{"s[t]atus",	"",	"status of self"},
@@ -315,9 +384,9 @@ show_help (CSock) ->
 	true.
 
 %}}}
-%{{{  trigger_move (CSock, Name, PlrPid, Direction): using the abstract player, triggers a move from the current location.
+%{{{  trigger_move (CSock, _Name, PlrPid, Direction): using the abstract player, triggers a move from the current location.
 
-trigger_move (CSock, Name, PlrPid, Direction) ->
+trigger_move (CSock, _Name, PlrPid, Direction) ->
 	PlrPid ! {move, self (), Direction},
 	receive
 		{cannot_move, PlrPid} ->
@@ -330,7 +399,7 @@ trigger_move (CSock, Name, PlrPid, Direction) ->
 %}}}
 %{{{  trigger_look (CSock, Name, PlrPid): using the abstract player, triggers a look in the current location.
 
-trigger_look (CSock, Name, PlrPid) ->
+trigger_look (CSock, _Name, PlrPid) ->
 	% find out where we are and look accordingly.
 	PlrPid ! {curlocn, self()},
 	receive
@@ -341,7 +410,7 @@ trigger_look (CSock, Name, PlrPid) ->
 %}}}
 %{{{  inv_look (CSock, Name, PlrPid): look at inventory.
 
-inv_look (CSock, Name, PlrPid) ->
+inv_look (CSock, _Name, PlrPid) ->
 	PlrPid ! {inv_look, self ()},
 	S = receive {inventory, IList} ->
 		case IList of
@@ -355,7 +424,7 @@ inv_look (CSock, Name, PlrPid) ->
 %}}}
 %{{{  qry_status (CSock, Name, PlrPid): query player status.
 
-qry_status (CSock, Name, PlrPid) ->
+qry_status (CSock, _Name, PlrPid) ->
 	PlrPid ! {qry_status, self ()},
 	S = receive
 		{status, Health, Vital, Wielding, Immortal} ->
@@ -373,7 +442,7 @@ qry_status (CSock, Name, PlrPid) ->
 %{{{  do_examine (CSock, OName, Name, PlrPid): examine an object/person.
 %
 
-do_examine (CSock, OName, Name, PlrPid) ->
+do_examine (CSock, OName, _Name, PlrPid) ->
 	PlrPid ! {do_examine, OName, self ()},
 	receive
 		{examined, Desc, Attrs} ->
@@ -402,12 +471,12 @@ str_objattrs ([_|R]) ->
 %{{{  do_attack (CSock, Who, Name, PlrPid): attack someone.
 %
 
-do_attack (CSock, Who, Name, PlrPid) ->
+do_attack (CSock, Who, _Name, PlrPid) ->
 	PlrPid ! {do_attack, Who, self ()},
 	receive
-		{attack_ok, Msg, Damage} ->
-			game_tcp_cli_writedstr (CSock, {high6, Msg}),
-			game_tcp_cli_writedstr (CSock, {high5, io_lib:format ("~w points of damage", [Damage])});
+		{attack_ok, Msg, _Damage} ->
+			game_tcp_cli_writedstr (CSock, {high6, Msg});
+			% game_tcp_cli_writedstr (CSock, {high5, io_lib:format ("~w points of damage", [Damage])});
 		{attack_fail, Msg} ->
 			game_tcp_cli_writedstr (CSock, {high6, Msg})
 	end,
@@ -417,7 +486,7 @@ do_attack (CSock, Who, Name, PlrPid) ->
 %{{{  do_pickup (CSock, OName, Name, PlrPid): pick up an object (assuming it's in the room).
 %
 
-do_pickup (CSock, OName, Name, PlrPid) ->
+do_pickup (CSock, OName, _Name, PlrPid) ->
 	PlrPid ! {do_pickup, OName, self ()},
 	receive
 		{picked_up, ONm, _OPid} ->
@@ -431,10 +500,10 @@ do_pickup (CSock, OName, Name, PlrPid) ->
 %{{{  do_drop (CSock, OName, Name, PlrPid): drop an object (assuming we're holding it).
 %
 
-do_drop (CSock, OName, Name, PlrPid) ->
+do_drop (CSock, OName, _Name, PlrPid) ->
 	PlrPid ! {do_drop, OName, self ()},
 	receive
-		{dropped, ONm} ->
+		{dropped, _ONm} ->
 			true;		% will see message via room
 		{drop_fail, _Msg} ->
 			game_tcp_cli_writedstr (CSock, {high2, "Cannot drop that."})
@@ -445,7 +514,7 @@ do_drop (CSock, OName, Name, PlrPid) ->
 %{{{  do_use (CSock, OName, Name, PlrPid): use an object (assuming it's in the room or held by us).
 %
 
-do_use (CSock, OName, Name, PlrPid) ->
+do_use (CSock, OName, _name, PlrPid) ->
 	PlrPid ! {do_use, OName, self ()},
 	receive
 		{use_ok} ->
@@ -453,7 +522,14 @@ do_use (CSock, OName, Name, PlrPid) ->
 		{use_noobj, _Msg} ->
 			game_tcp_cli_writedstr (CSock, {high2, "No such object."});
 		{use_fail, _Msg} ->
-			game_tcp_cli_writedstr (CSock, {high2, "Cannot use that."})
+			game_tcp_cli_writedstr (CSock, {high2, "Cannot use that."});
+		{use_eated, OldH, NewH} ->
+			Str = if NewH < OldH ->
+					io_lib:format ("Ate ~s, must have been bad, health now [~w/100]", [OName, NewH]);
+				true ->
+					io_lib:format ("Ate ~s, health now [~w/100]", [OName, NewH])
+				end,
+			game_tcp_cli_writedstr (CSock, {high2, Str})
 	end,
 	true.
 
@@ -461,7 +537,7 @@ do_use (CSock, OName, Name, PlrPid) ->
 %{{{  do_wield (CSock, OName, Name, PlrPid): wield an object (assuming it's held).
 %
 
-do_wield (CSock, OName, Name, PlrPid) ->
+do_wield (CSock, OName, _Name, PlrPid) ->
 	PlrPid ! {do_wield, OName, self ()},
 	receive
 		{wield_ok, ONm} ->
@@ -475,7 +551,7 @@ do_wield (CSock, OName, Name, PlrPid) ->
 %{{{  do_unwield (CSock, Name, PlrPid): unwield currently wielded object.
 %
 
-do_unwield (CSock, Name, PlrPid) ->
+do_unwield (CSock, _Name, PlrPid) ->
 	PlrPid ! {do_unwield, self ()},
 	receive
 		{unwield_ok, ONm} ->
@@ -489,7 +565,7 @@ do_unwield (CSock, Name, PlrPid) ->
 
 %{{{  look_in_location (LocnNum, LocnPid, CSock, PlrPid): looks in a location given location number and PID.
 
-look_in_location (LocnNum, LocnPid, CSock, PlrPid) ->
+look_in_location (_LocnNum, LocnPid, CSock, PlrPid) ->
 	LocnPid ! {look, self ()},
 	receive
 		{looked, LDesc, LObjects, LPlayers, LExits} ->
@@ -613,17 +689,18 @@ game_tcp_cli_writedstr (CSock, {msg, Str}) ->
 % messages sent to the socket (active mode).
 %
 game_tcp_svr_listening (GMgr, Port, LSock, PPid) ->
-	link (PPid),				% attach to original parent if not already.
+	link (PPid),					% attach to original parent if not already.
+	GMgr ! {set_tcp_server, {self(), Port}},	% tell game-manager who we are: for code-reload.
 	case gen_tcp:accept (LSock) of
 		{ok, CSock} ->
 			io:format ("game_tcp_svr_listening(): got connection (~p)~n", [CSock]),
 			spawn_link (?MODULE, game_tcp_svr_listening, [GMgr, Port, LSock, PPid]),
-			game_tcp_cli_first (GMgr, CSock);
+			game_tcp:game_tcp_cli_first (GMgr, CSock);
 		{error, R} ->
 			io:format ("game_tcp_svr_listening(): failed to accept new connection: ~p~n", [R]),
 			io:format ("game_tcp_svr_listening(): waiting 10 seconds and trying again..~n"),
 			timer:sleep (10000),
-			game_tcp_svr_listening (GMgr, Port, LSock, PPid)
+			game_tcp:game_tcp_svr_listening (GMgr, Port, LSock, PPid)
 	end.
 
 
@@ -640,6 +717,16 @@ game_tcp_start (GMgr, Port) ->
 			io:format ("game_tcp_server_start(): failed to listen on port ~p: ~p~n", [Port, R]),
 			false
 	end.
+
+%}}}
+%{{{  game_tcp_reload (TCPRef): reloads the TCP server, needs a kick via TCP.
+game_tcp_reload ({_Pid, Port}) ->
+	spawn (fun () -> game_tcp_doreload (Port) end),
+	true.
+
+game_tcp_doreload (Port) ->
+	{ok, S} = gen_tcp:connect ("localhost", Port, [binary, {packet, 0}]),
+	gen_tcp:close (S).
 
 %}}}
 

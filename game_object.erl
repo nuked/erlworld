@@ -193,7 +193,7 @@ game_object_run (GMgr, Name, Desc, Attrs, Opts) ->
 	end.
 
 game_object_shutdown (GMgr, Name) ->
-	io:format ("game_object_shutdown(): destroying object ~s~n", [Name]),
+	% io:format ("game_object_shutdown(): destroying object ~s~n", [Name]),
 	GMgr ! {unregister_object, Name, self (), self ()},
 	receive
 		{unregistered_object, GMgr, _} -> true

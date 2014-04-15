@@ -14,8 +14,10 @@ game:game_crun().
 By default the TCP server listens on port 4040 for incoming connections.  This can
 be changed inside `game_main.erl` (`game_run/0`).
 
-Note: this isn't finished yet..!
+The current state is that most of what existed in the occam-pi game is here, minus
+the LINC system and student bots.
+
 
 --- 
-Fred Barnes, March 2014.
+Fred Barnes, April 2014.
 

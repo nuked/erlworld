@@ -18,17 +18,17 @@ game_player_create (GMgr, PName, IPid) ->
 
 game_player_create (GMgr, PName, IPid, ILocn, Attrs) ->
 	% create new `game_player' process.
-	io:format ("game_player_create(): creating new player..~n"),
+	%io:format ("game_player_create(): creating new player..~n"),
 
 	PlayPid = spawn_link (?MODULE, game_player, [GMgr, PName, IPid, ILocn, self(), checkattrs (Attrs)]),
 
 	% then wait for it to respond.
 	receive
 		{player_fail, PlayPid} ->
-			io:format ("game_player_create(): failed to create player..~n"),
+			%io:format ("game_player_create(): failed to create player..~n"),
 			{error, "Failed to create player in game"};
 		{player_start, PlayPid} ->
-			io:format ("game_player_create(): created player!~n"),
+			%io:format ("game_player_create(): created player!~n"),
 			{ok, PlayPid}
 	end.
 
@@ -62,11 +62,11 @@ set_unwield (Attrs, What) ->
 set_unwield (Attrs) ->
 	maybedel_attr (Attrs, wielding).
 
-is_wielding (Attrs, What) ->
-	case lookup_attr (Attrs, wielding) of
-		{What,_} -> true;
-		_ -> false
-	end.
+%is_wielding (Attrs, What) ->
+%	case lookup_attr (Attrs, wielding) of
+%		{What,_} -> true;
+%		_ -> false
+%	end.
 
 %}}}
 
@@ -130,6 +130,14 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 			IPid ! {exit_appearing, self(), Direction},
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
 			%}}}
+		{exit_vanishing, Direction} -> %{{{  an exit appearing in a specific direction
+			IPid ! {exit_vanishing, self(), Direction},
+			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
+			%}}}
+		{exit_changing, Direction} -> %{{{  an exit appearing in a specific direction
+			IPid ! {exit_changing, self(), Direction},
+			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
+			%}}}
 		{move, IPid, Direction} -> %{{{  implementation telling us we should move
 			InLocn ! {do_move, PName, self (), Direction},
 			receive
@@ -154,6 +162,10 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 			%}}}
 		{person_leaving_noexit, OName} -> %{{{  someone being removed from the room
 			IPid ! {person_leaving_noexit, OName},
+			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
+			%}}}
+		{person_leaving_death, OName} -> %{{{  someone dying in the room
+			IPid ! {person_leaving_death, OName},
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
 			%}}}
 		{player_drop_object, Name, OName} -> %{{{  player dropping an object, forward.
@@ -185,6 +197,29 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 					lookup_attr (Attrs, wielding), lookup_attr (Attrs, immortal)},
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
 		%}}}
+		{attack, Who, What, Damage, Pid} -> %{{{  being attacked by `Who' with `What' for `Damage'.  Responds to `Pid'.
+			case lookup_attr (Attrs, immortal) of
+				true ->
+					Pid ! {attack_fail, PName ++ " is immortal!"},
+					IPid ! {attack, Who, What, 0},
+					game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
+				undefined ->
+					% not immportal, take damage
+					Pid ! {attack_ok, io_lib:format ("Attacked ~s using ~s, ~w points damage", [Who, What, Damage]), Damage},
+					IPid ! {attack, Who, What, Damage},
+					H = lookup_attr (Attrs, health),
+					H2 = H - Damage,
+					if (H2 < 0) ->
+						% died..
+						IPid ! {died},
+						NewAttrs = maybeset_attr (Attrs, {health, 0}),
+						game_player_deathloop (GMgr, PName, IPid, OTab, InLNum, InLocn, NewAttrs);
+					true ->
+						NewAttrs = maybeset_attr (Attrs, {health, H2}),
+						game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, NewAttrs)
+					end
+			end;
+			%}}}
 		{do_examine, OName, Pid} -> %{{{  examine an object: either held by player (pref) or in the room.  Responds to `Pid'.
 			OObjs = ets:lookup (OTab, OName),
 			case OObjs of
@@ -224,33 +259,77 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, NewAttrs);
 			%}}}
 		{do_use, OName, Pid} -> %{{{  use something (us using it).  Responds to `Pid'.
-			InLocn ! {do_use, PName, OName, self ()},
-			NewAttrs = receive
-				{use_ok} -> Pid ! {use_ok}, Attrs;
-				{use_noobj, M} -> Pid ! {use_noobj, M}, Attrs;
-				{use_fail, M} -> Pid ! {use_fail, M}, Attrs;
-				{use_in_player, OPid} ->
-					% means the object interacts directly with us.
-					OPid ! {use_in_player, PName, self(), self ()},
-					receive
-						{use_fail, M} -> Pid ! {use_fail, M};
-						{use_movetolocn, NewLNum, NewLocn} ->
-							% extract from current location
-							InLocn ! {leave_noexit, PName},
-							% place in new
-							NewLocn ! {enter, {PName, self ()}},
-							Pid ! {use_ok}
-							% Note: when this loops, we'll get an 'entered' for the new location.
-					end,
-					Attrs;
-				{use_ate, Obj, Health} ->
-					% means we have just eaten the object!
-					NewHealth = lookup_attr (Attrs, health) + Health,
-					NHealth2 = if (NewHealth > 100) -> 100; true -> NewHealth end,
-					Pid ! {use_ok},
-					maybeset_attr (Attrs, {health, NHealth2})
-			end,
-			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
+			OObjs = ets:lookup (OTab, OName),
+			NewAttrs = case OObjs of
+				[] ->
+					% none locally, check room and handle response.
+					InLocn ! {do_use, PName, OName, self ()},
+					receive		% result assigned to 'NewAttrs'.
+						{use_ok} -> Pid ! {use_ok}, Attrs;
+						{use_noobj, M} -> Pid ! {use_noobj, M}, Attrs;
+						{use_fail, M} -> Pid ! {use_fail, M}, Attrs;
+						{use_in_player, OPid} ->
+							% means the object interacts directly with us.
+							OPid ! {use_in_player, PName, self(), self ()},
+							receive
+								{use_fail, M} -> Pid ! {use_fail, M};
+								{use_movetolocn, _NewLNum, NewLocn} ->
+									% extract from current location
+									InLocn ! {leave_noexit, PName},
+									% place in new
+									NewLocn ! {enter, {PName, self ()}},
+									Pid ! {use_ok}
+									% Note: when this loops, we'll get an 'entered' for the new location.
+							end,
+							Attrs;
+						{use_ate, _Obj, Health} ->
+							% means we have just eaten the object!
+							CurHealth = lookup_attr (Attrs, health),
+							NewHealth = CurHealth + Health,
+							NHealth2 = if (NewHealth > 100) -> 100; true -> NewHealth end,
+							Pid ! {use_eated, CurHealth, NHealth2},
+							maybeset_attr (Attrs, {health, NHealth2})
+					end;
+				[{ONm,OPid}|_] ->
+					% at least one locally, check it and handle response.
+					OPid ! {use_type, self()},
+					UType = receive {can_use, OPid, U} -> U end,
+					case UType of		% result assigned to 'NewAttrs'.
+						use_none ->
+							Pid ! {use_fail, "Cannot use that"},
+							Attrs;
+						use_inlocn ->
+							Pid ! {use_fail, "Cannot use that here!"},
+							Attrs;
+						use_inplayer ->
+							% means the object interacts directly with us.
+							OPid ! {use_in_player, PName, self(), self ()},
+							receive
+								{use_fail, M} -> Pid ! {use_fail, M};
+								{use_movetolocn, _NewLNum, NewLocn} ->
+									% extract from current location
+									InLocn ! {leave_noexit, PName},
+									% place in new
+									NewLocn ! {enter, {PName, self ()}},
+									Pid ! {use_ok}
+									% Note: when this loops, we'll get an 'entered' for the new location.
+							end,
+							Attrs;
+						use_eat ->
+							% means we can eat this.
+							OPid ! {get_attr, health, self ()},
+							H = receive {attr, health, HX} -> HX end,
+							ets:delete_object (OTab, {ONm, OPid}),
+							OPid ! {destroy},			% trash object.
+
+							CurHealth = lookup_attr (Attrs, health),
+							NewHealth = CurHealth + H,
+							NHealth2 = if (NewHealth > 100) -> 100; true -> NewHealth end,
+							Pid ! {use_eated, CurHealth, NHealth2},
+							maybeset_attr (Attrs, {health, NHealth2})
+					end
+				end,
+			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, NewAttrs);
 			%}}}
 		{do_wield, OName, Pid} -> %{{{  wield something (must be holding it).  Responds to `Pid'.
 			OObjs = ets:lookup (OTab, OName),
@@ -275,7 +354,23 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 			end,
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, NewAttrs);
 			%}}}
-		{do_attack, Who, Pid} -> %{{{  attack someone (us attacking).
+		{do_attack, Who, Pid} -> %{{{  attack someone (us attacking).  Reponds to `Pid'.
+			case lookup_attr (Attrs, wielding) of
+				undefined ->
+					Pid ! {attack_fail, "Not with my bare hands!"};
+				{ONm, OPid} ->
+					% wielding something
+					OPid ! {get_attr, damage, self()},
+					Dmg = receive {attr, damage, undefined} -> 0; {attr, damage, D} -> D end,
+					% ask location to inflict on our behalf
+					InLocn ! {do_attack, PName, Who, ONm, Dmg, self()},
+					receive
+						X = {attack_fail, _} ->
+							Pid ! X;
+						Y = {attack_ok, _, _} ->
+							Pid ! Y
+					end
+			end,
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
 			%}}}
 		{do_say, Who, What} -> %{{{  say something (us saying it).
@@ -296,7 +391,40 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 	end.
 
 
-game_player_disc (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
+game_player_deathloop (GMgr, PName, IPid, OTab, _InLNum, InLocn, Attrs) ->
+	% first of all, leave the room (so we don't see any more interactions).
+	InLocn ! {leave_death, PName},
+	receive
+		{left_death, _} -> true
+	end,
+	timer:sleep (1000),
+	IPid ! {message, "Some passing Valkyries scrape you up"},
+	timer:sleep (2000),
+	IPid ! {message, "relieve you of your belongings"},
+	% gone from location, drop objects there.
+	ets:foldl (fun ({OName, OPid}, _) ->
+			InLocn ! {player_drop, "Valkyries", OName, OPid},
+			true
+		end, true, OTab),
+	ets:delete_all_objects (OTab),
+	timer:sleep (2000),
+	IPid ! {message, "get you back on your feet and drop you off somewhere"},
+
+	GMgr ! {lookup_locn, 0, self()},
+	SetLocn = receive {locn, GMgr, XLocn} -> XLocn end,
+
+	timer:sleep (1000),
+	IPid ! {resurrect},
+	timer:sleep (1000),
+
+	SetLocn ! {enter, {PName, self()}},
+
+	% fixup health, vitality, unwield;  loop back into main player code.
+	NewAttrs = maybeset_attr (maybeset_attr (set_unwield (Attrs), {health, 100}), {vitality, 100}),
+	game_player_run (GMgr, PName, IPid, OTab, 0, SetLocn, NewAttrs).
+
+
+game_player_disc (GMgr, PName, IPid, OTab, InLNum, InLocn, _Attrs) ->
 	ets:foldl (fun ({OName, OPid}, _) ->
 			InLocn ! {player_drop, PName, OName, OPid},
 			true
@@ -315,7 +443,7 @@ game_player_disc_soak (GMgr, PName, IPid, InLNum, InLocn) ->
 	end.
 
 
-game_player_disc_done (GMgr, PName, IPid) ->
+game_player_disc_done (GMgr, PName, _IPid) ->
 	GMgr ! {unregister_player, PName, self ()},
 	receive {unregistered_player, GMgr, _} ->
 		io:format ("game_player_disc_done(): player (~p) is done.~n", [PName]),
