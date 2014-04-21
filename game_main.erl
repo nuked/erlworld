@@ -13,6 +13,7 @@
 -import (game_player, [game_player_create/2]).
 -import (game_object, [game_object_create/3]).
 -import (game_bots, [game_bot_create/4, game_bot_create/7]).
+-import (game_linc, [game_linc_create/2]).
 
 
 %{{{  game_manager(): main game manager process.
@@ -130,6 +131,19 @@ game_manager_run (LTab, PTab, OTab, TCPRef) ->
 			ets:foldl (fun ({_, P}, _) -> P ! code_switch, true end, true, OTab),
 			game_manager_run (LTab, PTab, OTab, TCPRef);
 			%}}}
+		{code_switch_locns} -> %{{{  sends messages to all locations instructing them to code_switch.
+			ets:foldl (fun ({_, P}, _) -> P ! code_switch, true end, true, LTab),
+			game_manager_run (LTab, PTab, OTab, TCPRef);
+			%}}}
+		{refresh_objects} -> %{{{  refresh all object descriptions and attributes
+			ets:foldl (fun ({_, P}, _) -> P ! {refresh_object}, true end, true, OTab),
+			game_manager_run (LTab, PTab, OTab, TCPRef);
+			%}}}
+		{refresh_object, Obj} -> %{{{  refresh a particular object's description and attributes
+			Objs = ets:lookup (OTab, Obj),
+			lists:map (fun ({_, P}) -> P ! {refresh_object}, true end, Objs),
+			game_manager_run (LTab, PTab, OTab, TCPRef);
+			%}}}
 		Other ->
 			io:format ("game_manager_run(): unhandled message: ~p~n", [Other]),
 			game_manager_run (LTab, PTab, OTab, TCPRef)
@@ -156,10 +170,16 @@ gc_help (_) -> %{{{
 	io:format ("    sproom <Name> <Locn>    spawn location of the given name/type~n"),
 	io:format ("    spbot <Type> <Name> <Locn> <TLocn> <TSrc> <TName>~n"),
 	io:format ("                            spawn bot in specific location~n"),
+	io:format ("    splinc <LLocn>          spawn a LINC system~n"),
+	io:format ("    splinct <Locn> <LLocn>  spawn a LINC terminal~n"),
 	io:format ("    sphealth                spawn a random health generator~n"),
 	io:format ("    link <Lc> <Exit> <To>   link Lc:Exit to To~n"),
 	io:format ("    reloadbots              re-compile and re-load bot code~n"),
 	io:format ("    reloadplayers           re-compile and re-load player code (includes bots)~n"),
+	io:format ("    reloadobjects           re-compile and re-load object code~n"),
+	io:format ("    reloadlocns             re-compile and re-load locations/linc code~n"),
+	io:format ("    refreshobjects          re-load object descriptions/attributes~n"),
+	io:format ("    refreshobject <Obj>     re-load object description/attributes for named object~n"),
 	true.
 
 %}}}
@@ -272,6 +292,42 @@ gc_spawnbot (GMgr, Type, Name, Locn, TLocn, TSrc, TName) -> %{{{
 	end.
 
 %}}}
+gc_spawnlinc (GMgr, LLocn) -> %{{{
+	R = game_linc_create (GMgr, list_to_integer (LLocn)),
+	if (R == false) ->
+		io:format ("failed to spawn LINC..~n"),
+		true;
+	true ->
+		true
+	end.
+
+%}}}
+gc_spawnlinct (GMgr, Locn, LLocn) -> %{{{
+
+	O = game_object_create (GMgr, "linc-terminal", [{linc, list_to_integer (LLocn)}, {need_object, "schriebmann-port"}]),
+
+	if (O == false) ->
+		io:format ("failed to spawn linc-terminal object..~n");
+	true ->
+		% place in specific location.
+		GMgr ! {lookup_locn, list_to_integer (Locn), self ()},
+		InitLocn = receive
+			{error, GMgr, _} ->
+				io:format ("cannot spawn linc-terminal here (~p), no such location!", [Locn]),
+
+				% dump it in the construct..
+				GMgr ! {lookup_locn, 0, self()},
+				receive {locn, GMgr, L} -> L end;
+			{locn, GMgr, L} ->
+				L
+		end,
+
+		% place object there!
+		InitLocn ! {drop, "linc-terminal", O}
+	end,
+	true.
+
+%}}}
 gc_status (GMgr) -> %{{{
 	GMgr ! {status, self()},
 	receive
@@ -337,6 +393,27 @@ gc_reloadobjects (GMgr) -> %{{{
 	end.
 
 %}}}
+gc_reloadlocns (GMgr) -> %{{{
+	Mods = [game_locn,game_linc],
+	case purge_mods (Mods) andalso compile_mods (Mods) andalso reload_mods (Mods) of
+		true ->
+			GMgr ! {code_switch_locns},
+			true;
+		false ->
+			false
+	end.
+
+%}}}
+gc_refreshobjects (GMgr) -> %{{{
+	GMgr ! {refresh_objects},
+	true.
+
+%}}}
+gc_refreshobject (GMgr, Obj) -> %{{{
+	GMgr ! {refresh_object, Obj},
+	true.
+
+%}}}
 
 %}}}
 %{{{  game_console (GMgr): game's superuser console.
@@ -354,11 +431,16 @@ game_console (GMgr) ->
 	ets:insert (CmdTab, {{spdoor, 3}, fun gc_spawndoorobj/4}),
 	ets:insert (CmdTab, {{sproom, 2}, fun gc_spawnlocn/3}),
 	ets:insert (CmdTab, {{spbot, 6}, fun gc_spawnbot/7}),
+	ets:insert (CmdTab, {{splinc, 1}, fun gc_spawnlinc/2}),
+	ets:insert (CmdTab, {{splinct, 2}, fun gc_spawnlinct/3}),
+	ets:insert (CmdTab, {{sphealth, 0}, fun gc_spawnhealth/1}),
 	ets:insert (CmdTab, {{link, 3}, fun gc_linklocn/4}),
 	ets:insert (CmdTab, {{reloadbots, 0}, fun gc_reloadbots/1}),
 	ets:insert (CmdTab, {{reloadplayers, 0}, fun gc_reloadplayers/1}),
 	ets:insert (CmdTab, {{reloadobjects, 0}, fun gc_reloadobjects/1}),
-	ets:insert (CmdTab, {{sphealth, 0}, fun gc_spawnhealth/1}),
+	ets:insert (CmdTab, {{reloadlocns, 0}, fun gc_reloadlocns/1}),
+	ets:insert (CmdTab, {{refreshobjects, 0}, fun gc_refreshobjects/1}),
+	ets:insert (CmdTab, {{refreshobject, 1}, fun gc_refreshobject/2}),
 
 	% create first room: the construct (default for abandoned people/objects/etc.)
 	gc_spawnlocn (GMgr, "construct", "0"),
@@ -404,8 +486,13 @@ game_read_process_script (FHan, GMgr, CmdTab, LineNo) ->
 						0 ->
 							io:format ("unrecognised command [~p] in script line ~p~n", [First, LineNo]);
 						1 ->
-							{_, F} = hd (Cmds),
-							apply (F, [GMgr | tl (Xs)])
+							try
+								{_, F} = hd (Cmds),
+								apply (F, [GMgr | tl (Xs)])
+							catch
+								error: X -> io:format ("error while running command in script line ~p: ~p~n",
+										[LineNo, X])
+							end
 					end
 				end
 			end,
@@ -429,8 +516,12 @@ game_console_run (GMgr, CmdTab) ->
 			0 ->
 				io:format ("unrecognised command: ~p~n", [First]);
 			1 ->
-				{_, F} = hd (Cmds),
-				apply (F, [GMgr | tl (Xs)])
+				try
+					{_, F} = hd (Cmds),
+					apply (F, [GMgr | tl (Xs)])
+				catch
+					error: X -> io:format ("error while running command: ~p~n", [X])
+				end
 		end,
 		game_console_run (GMgr, CmdTab)
 	end.

@@ -525,6 +525,7 @@ spdobj photocopier photocopy 113
 spdobj machine silver 103
 spdobj mincer sausage 7
 
-splinc 0
+splinc 200
+splinct 0 200
 sphealth
 

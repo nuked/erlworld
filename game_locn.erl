@@ -88,9 +88,10 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 	receive
 		code_switch -> %{{{  switch code
 			io:format ("game_locn_run(): location ~p switching code..~n", [LNum]),
+			ets:foldl (fun ({_, P}, _) -> P ! {message, "A black cat walks past, and then another cat just like it"}, true end, 0, PTab),
 			game_locn:game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
-		{enter, {Name, PPid}} -> %{{{  player entering the room, send notifications to those already here and add player
+		{enter, _OldLocn, {Name, PPid}} -> %{{{  player entering the room, send notifications to those already here and add player
 			ets:foldl (fun ({_, P}, _) -> P ! {person_entering, Name}, true end, 0, PTab),
 			ets:insert (PTab, {Name, PPid}),
 			PPid ! {entered, LNum, self ()},
@@ -116,7 +117,7 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 			PPid ! {left_death, LNum},
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 		%}}}
-		{look, Pid} -> %{{{  player (or bot) looking around.
+		{look, _PlrPid, Pid} -> %{{{  player (or bot) looking around.  Responds to `Pid'.
 			Objects = ets:foldl (fun ({Name, _Pid}, L) -> [Name | L] end, [], OTab),
 			People = ets:foldl (fun (NamePid, L) -> [NamePid | L] end, [], PTab),
 
@@ -161,7 +162,7 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 					ets:foldl (fun ({_, P}, _) -> P ! {person_leaving_exit, Name, Direction}, true end, 0, PTab),
 
 					Pid ! {moving, self ()},
-					NextUp ! {enter, {Name, Pid}}
+					NextUp ! {enter, LNum, {Name, Pid}}
 			end,
 			game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits);
 			%}}}
@@ -261,6 +262,8 @@ game_locn_run (GMgr, LNum, Desc, PTab, OTab, Exits) ->
 							Pid ! Used;
 						use_inplayer ->
 							Pid ! {use_in_player, OPid};
+						{use_inplayer, Fcn} ->
+							Pid ! {use_in_player, OPid, Fcn};
 						use_eat ->
 							OPid ! {get_attr, health, self ()},
 							H = receive {attr, health, HX} -> HX end,

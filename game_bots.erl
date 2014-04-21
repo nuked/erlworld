@@ -108,7 +108,7 @@ game_wanderbot_run2 (GMgr, BName, PlrPid, TmrPid) ->
 				%{{{  see if we can move from here.
 				PlrPid ! {curlocn, self ()},
 				{_LNum, LPid} = receive {curlocn, PlrPid, LN, LP} -> {LN, LP} end,
-				LPid ! {look, self ()},
+				LPid ! {look, PlrPid, self ()},
 				Exits = receive {looked, _Desc, _Objects, _People, E} -> E end,
 
 				VX = valid_exits (Exits, [north, east, south, west]),
@@ -181,7 +181,7 @@ game_cleanerbot_run2 (GMgr, BName, PlrPid, TmrPid) ->
 			% Get exits and objects.
 			PlrPid ! {curlocn, self ()},
 			{_LNum, LPid} = receive {curlocn, PlrPid, LN, LP} -> {LN, LP} end,
-			LPid ! {look, self ()},
+			LPid ! {look, PlrPid, self ()},
 			{Exits, Objects} = receive {looked, _Desc, O, _People, E} -> {E, O} end,
 
 			V = random:uniform (6),
@@ -485,7 +485,7 @@ game_traderbot_run2 (GMgr, BName, PlrPid, TmrPid) ->
 
 			PlrPid ! {curlocn, self ()},
 			{_LNum, LPid} = receive {curlocn, PlrPid, LN, LP} -> {LN, LP} end,
-			LPid ! {look, self ()},
+			LPid ! {look, PlrPid, self ()},
 			Exits = receive {looked, _Desc, _Objects, _People, E} -> E end,
 
 			VX = valid_exits (Exits, [north, east, south, west]),
@@ -526,7 +526,10 @@ game_wizardbot_run2 (GMgr, BName, PlrPid, TmrPid, BTLocn, BTSrc, BTName, GateOpe
 	receive
 		code_switch -> %{{{  switch code;  tell timer process en-route.
 			PlrPid ! {do_action, BName, "undergoes a firmware upgrade"},
-			TmrPid ! code_switch,
+			if
+				(TmrPid == none) -> true;
+				true -> TmrPid ! code_switch
+			end,
 			game_bots:game_wizardbot_run2 (GMgr, BName, PlrPid, TmrPid, BTLocn, BTSrc, BTName, GateOpen);
 			%}}}
 		{player_drop_object, PN, OName} -> %{{{  someone dropping something

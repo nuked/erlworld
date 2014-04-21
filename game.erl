@@ -13,7 +13,7 @@ game_run () ->
 % Slightly more gruesome version that attempts to compile stuff first.
 game_docompile () ->
 	% modules, in dependency order..
-	Mods = [game_util, game_object, game_locn, game_player, game_tcp, game_bots, game_main],
+	Mods = [game_util, game_object, game_locn, game_player, game_tcp, game_bots, game_linc, game_main],
 
 	lists:map (fun (M) -> {ok, _} = compile:file (atom_to_list (M) ++ ".erl") end, Mods),
 	lists:map (fun (M) -> code:purge (M) end, Mods),

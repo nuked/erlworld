@@ -101,7 +101,7 @@ game_player (GMgr, PName, IPid, ILocn, PPid, Attrs) ->
 	PPid ! {player_start, self()},
 
 	% now put the player in the room (fabricated `enter' message).
-	SetLocn ! {enter, {PName, self()}},
+	SetLocn ! {enter, 0, {PName, self()}},
 
 	game_player_run (GMgr, PName, IPid, OTab, ILocn, SetLocn, Attrs).
 
@@ -270,16 +270,36 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 						{use_fail, M} -> Pid ! {use_fail, M}, Attrs;
 						{use_in_player, OPid} ->
 							% means the object interacts directly with us.
-							OPid ! {use_in_player, PName, self(), self ()},
+							OPid ! {use_in_player, PName, InLNum, self(), self ()},
 							receive
 								{use_fail, M} -> Pid ! {use_fail, M};
 								{use_movetolocn, _NewLNum, NewLocn} ->
 									% extract from current location
 									InLocn ! {leave_noexit, PName},
 									% place in new
-									NewLocn ! {enter, {PName, self ()}},
+									NewLocn ! {enter, InLNum, {PName, self ()}},
 									Pid ! {use_ok}
 									% Note: when this loops, we'll get an 'entered' for the new location.
+							end,
+							Attrs;
+						{use_in_player, OPid, Fcn} ->
+							case Fcn (OTab) of
+								true ->
+									% means the object interacts directly with us.
+									OPid ! {use_in_player, PName, InLNum, self(), self ()},
+									receive
+										{use_fail, M} -> Pid ! {use_fail, M};
+										{use_movetolocn, _NewLNum, NewLocn} ->
+											% extract from current location
+											InLocn ! {leave_noexit, PName},
+											% place in new
+											NewLocn ! {enter, InLNum, {PName, self ()}},
+											Pid ! {use_ok}
+											% Note: when this loops, we'll get an
+											% 'entered' for the new location.
+									end;
+								{false, X} ->
+									Pid ! {use_fail, "probably need a " ++ X}
 							end,
 							Attrs;
 						{use_ate, _Obj, Health} ->
@@ -310,9 +330,29 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 									% extract from current location
 									InLocn ! {leave_noexit, PName},
 									% place in new
-									NewLocn ! {enter, {PName, self ()}},
+									NewLocn ! {enter, InLNum, {PName, self ()}},
 									Pid ! {use_ok}
 									% Note: when this loops, we'll get an 'entered' for the new location.
+							end,
+							Attrs;
+						{use_inplayer, Fcn} ->
+							case Fcn (OTab) of
+								true ->
+									% means the object interacts directly with us.
+									OPid ! {use_in_player, PName, self(), self ()},
+									receive
+										{use_fail, M} -> Pid ! {use_fail, M};
+										{use_movetolocn, _NewLNum, NewLocn} ->
+											% extract from current location
+											InLocn ! {leave_noexit, PName},
+											% place in new
+											NewLocn ! {enter, InLNum, {PName, self ()}},
+											Pid ! {use_ok}
+											% Note: when this loops, we'll get an
+											% 'entered' for the new location.
+									end;
+								{false, X} ->
+									Pid ! {use_fail, "probably need a " ++ X}
 							end,
 							Attrs;
 						use_eat ->
@@ -385,13 +425,17 @@ game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 			Pid ! {examine_resist, "oi!"},
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
 			%}}}
+		{message, Msg} -> %{{{  general message sent to player -- forward to implementation.
+			IPid ! {message, Msg},
+			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs);
+			%}}}
 		Other ->
 			io:format ("game_player_run(): got unhandled message: ~p~n", [Other]),
 			game_player_run (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs)
 	end.
 
 
-game_player_deathloop (GMgr, PName, IPid, OTab, _InLNum, InLocn, Attrs) ->
+game_player_deathloop (GMgr, PName, IPid, OTab, InLNum, InLocn, Attrs) ->
 	% first of all, leave the room (so we don't see any more interactions).
 	InLocn ! {leave_death, PName},
 	receive
@@ -417,7 +461,7 @@ game_player_deathloop (GMgr, PName, IPid, OTab, _InLNum, InLocn, Attrs) ->
 	IPid ! {resurrect},
 	timer:sleep (1000),
 
-	SetLocn ! {enter, {PName, self()}},
+	SetLocn ! {enter, InLNum, {PName, self()}},
 
 	% fixup health, vitality, unwield;  loop back into main player code.
 	NewAttrs = maybeset_attr (maybeset_attr (set_unwield (Attrs), {health, 100}), {vitality, 100}),

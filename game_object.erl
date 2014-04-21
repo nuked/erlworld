@@ -107,12 +107,14 @@ game_object (GMgr, Name, Desc, Attrs, Opts, PPid) ->
 object_use_type ([]) -> use_none;
 object_use_type ([{dispenser, _}|_]) -> use_inlocn;
 object_use_type ([{door, _}|_]) -> use_inplayer;
+object_use_type ([{linc, _}|_]) -> use_inplayer;
 object_use_type ([_|Xs]) -> object_use_type (Xs).
 
 object_use_name ([{dispenser, O}|_]) -> O;
 object_use_name ([_|Xs]) -> object_use_name (Xs).
 
 object_use_locn ([{door, L}|_]) -> L;
+object_use_locn ([{linc, L}|_]) -> L;
 object_use_locn ([_|Xs]) -> object_use_locn (Xs).
 
 
@@ -142,10 +144,27 @@ game_object_run (GMgr, Name, Desc, Attrs, Opts) ->
 			game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
 		{use_type, Pid} -> %{{{  returns the type of usage this object supports: use_none, use_inlocn, use_inplayer, use_eat
-			Pid ! case lookup_attr (Attrs, health) of
-				undefined -> {can_use, self (), object_use_type (Opts)};
-				_ -> {can_use, self (), use_eat}
-			end,
+			UType = case lookup_attr (Attrs, health) of
+					undefined -> {can_use, self (), object_use_type (Opts)};
+					_ -> {can_use, self (), use_eat}
+				end,
+			% see if we need an object in "use_inplayer" mode, if so, return with a function
+			% that can test an ETS object table {OName,OPid} for this.
+			UType2 = case {UType, lookup_attr (Opts, need_object)} of
+					{_, undefined} -> UType;
+					{{can_use, PP, use_inplayer}, NObj} -> {can_use, PP, {use_inplayer, fun (OTab) ->
+											OO = ets:lookup (OTab, NObj),
+											%% io:format ("in-object/use_type: need ~s, ets=~p~n",
+											%%	[NObj, OO]),
+											case OO of
+												[] -> {false, NObj};
+												_ -> true
+											end
+										end}};
+					{_, _} -> UType
+				end,
+			%% io:format ("object: use_type on ~s = ~p, attrs were: ~p, opts were: ~p~n", [Name, UType2, Attrs, Opts]),
+			Pid ! UType2,
 			game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
 		{use_in_locn, _LNum, LPid, Pid} -> %{{{  using object in a specific location
@@ -165,7 +184,7 @@ game_object_run (GMgr, Name, Desc, Attrs, Opts) ->
 			end,
 			game_object_run (GMgr, Name, Desc, Attrs, Opts);
 			%}}}
-		{use_in_player, _PName, _PPid, Pid} -> %{{{  someone using an object in a specific way.  query is done by abstract player; respond to `Pid' saying how to handle.
+		{use_in_player, _PName, _CurLocn, PPid, Pid} -> %{{{  someone using an object in a specific way.  query is done by abstract player; respond to `Pid' saying how to handle.
 			case object_use_type (Opts) of
 				use_inplayer ->
 					% this transports the player elsewhere
@@ -181,11 +200,21 @@ game_object_run (GMgr, Name, Desc, Attrs, Opts) ->
 					if (NewLocn == false) ->
 						Pid ! {use_fail, "cannot use this"};
 					true ->
+						PPid ! {message, "the gateway transports you to another part of the game"},
 						Pid ! {use_movetolocn, LocnNum, NewLocn}
 					end;
 				_ -> Pid ! {use_fail, "cannot use this"}
 			end,
 			game_object_run (GMgr, Name, Desc, Attrs, Opts);
+			%}}}
+		{refresh_object} -> %{{{  reloads the object's description and static attributes.
+			{ND, NA} = case game_read_ofile (Name) of
+				{error, R} ->
+					io:format ("game_object_run(~s): failed to refresh: ~s~n", [Name, R]),
+					{Desc, Attrs};
+				{NewDesc, NewAttrs} -> {NewDesc, NewAttrs}
+			end,
+			game_object_run (GMgr, Name, ND, NA, Opts);
 			%}}}
 		Other ->
 			io:format ("game_object_run(): got unhandled message: ~p~n", [Other]),

@@ -521,8 +521,8 @@ do_use (CSock, OName, _name, PlrPid) ->
 			true;				% ignore
 		{use_noobj, _Msg} ->
 			game_tcp_cli_writedstr (CSock, {high2, "No such object."});
-		{use_fail, _Msg} ->
-			game_tcp_cli_writedstr (CSock, {high2, "Cannot use that."});
+		{use_fail, Msg} ->
+			game_tcp_cli_writedstr (CSock, {high2, "Cannot use that (" ++ Msg ++ ")"});
 		{use_eated, OldH, NewH} ->
 			Str = if NewH < OldH ->
 					io_lib:format ("Ate ~s, must have been bad, health now [~w/100]", [OName, NewH]);
@@ -566,7 +566,7 @@ do_unwield (CSock, _Name, PlrPid) ->
 %{{{  look_in_location (LocnNum, LocnPid, CSock, PlrPid): looks in a location given location number and PID.
 
 look_in_location (_LocnNum, LocnPid, CSock, PlrPid) ->
-	LocnPid ! {look, self ()},
+	LocnPid ! {look, PlrPid, self ()},
 	receive
 		{looked, LDesc, LObjects, LPlayers, LExits} ->
 			lists:map (fun (X) -> game_tcp_cli_writedstr (CSock, X), true end, LDesc),
